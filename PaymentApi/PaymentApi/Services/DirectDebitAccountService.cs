@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Options;
 using PaymentApi.Model;
 using Stripe;
 using Stripe.Checkout;
@@ -73,10 +73,9 @@ namespace PaymentApi.Services
             string paymentMethodId = await CreatePaymentMethod(model);
 
             string customerId = await CreateCustomer(model, paymentMethodId);
-
             string planId = await CreatePlanId(model.ProductDetails.ProductName, model.ProductDetails.Amount, model.ProductDetails.Currency, model.ProductDetails.Interval, model.ProductDetails.IntervalCount);
 
-            return await CreateSubscription(customerId, model.ProductDetails.StartDate, planId);
+            return await CreateSubscription(customerId, planId, paymentMethodId);
         }
         #endregion
 
@@ -110,31 +109,33 @@ namespace PaymentApi.Services
         #endregion
 
         #region MethodForCreateSubscription
-        private async Task<string> CreateSubscription(string customerId, DateTime startDate, string planId)
+        private async Task<string> CreateSubscription(string customerId, string planId, string paymentMethodId)
         {
             try
             {
-                var options = new SubscriptionScheduleCreateOptions
+                var options = new SubscriptionCreateOptions
                 {
+                    DefaultPaymentMethod= paymentMethodId,
                     Customer = customerId,
-                    StartDate = startDate,
-                    Phases = new List<SubscriptionSchedulePhaseOptions>
+                    Items = new List<SubscriptionItemOptions>
                     {
-                        new SubscriptionSchedulePhaseOptions
+                        new SubscriptionItemOptions
                         {
-                            Items = new List<SubscriptionSchedulePhaseItemOptions>
-                            {
-                                new SubscriptionSchedulePhaseItemOptions
-                                {
-                                    Plan=planId,
-                                },
-                            },
-                        },
+                            Plan = planId,
+                        }
                     },
+                    TrialPeriodDays = null,  
+                    TrialFromPlan = false,
+                    CollectionMethod = "charge_automatically",
+                    PaymentBehavior= "default_incomplete",
+
                 };
-                var service = new SubscriptionScheduleService(_stripeClient);
-                var schedule = service.Create(options);
-                return schedule.Id;
+
+                var service = new SubscriptionService(_stripeClient);
+                var subscription = service.Create(options);
+                var invoiceService = new InvoiceService(_stripeClient);
+                var invoice = await invoiceService.GetAsync(subscription.LatestInvoiceId);
+                return invoice.HostedInvoiceUrl;
             }
             catch (Exception ex)
             {
@@ -152,13 +153,25 @@ namespace PaymentApi.Services
                 var existingCustomer = await customerService.ListAsync(new CustomerListOptions { Email = model.BillingDetails.Email, Limit = 1 });
                 if (existingCustomer.Any())
                 {
-                    return existingCustomer.First().Id;
+                    var updateOptions = new CustomerUpdateOptions
+                    {
+                        InvoiceSettings = new CustomerInvoiceSettingsOptions
+                        {
+                            DefaultPaymentMethod = PaymentmetyhodId
+                        }
+                    };
+                    var updatedCustomer = await customerService.UpdateAsync(existingCustomer.First().Id, updateOptions);
+                    return updatedCustomer.Id;
                 }
                 var customerCreateOptions = new CustomerCreateOptions
                 {
                     PaymentMethod = PaymentmetyhodId,
                     Email = model.BillingDetails.Email,
                     Name = model.BillingDetails.Name,
+                    InvoiceSettings = new CustomerInvoiceSettingsOptions
+                    {
+                        DefaultPaymentMethod = PaymentmetyhodId
+                    }
                 };
                 var newCustomer = await customerService.CreateAsync(customerCreateOptions);
                 return newCustomer.Id;
@@ -209,7 +222,3 @@ namespace PaymentApi.Services
 
             }
         }
-        #endregion
-
-    }
-}
